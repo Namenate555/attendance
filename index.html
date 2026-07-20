@@ -65,7 +65,11 @@
   <div class="setup" id="setupBox">
     ⚙️ <b>ตั้งค่าครั้งแรก:</b> วาง URL ของ Web App (ลงท้าย /exec)
     <input id="apiUrl" placeholder="https://script.google.com/macros/s/..../exec" style="margin-top:8px">
-    <button class="ghost" onclick="saveApi()">บันทึก URL</button>
+    <div class="row">
+      <button class="ghost" onclick="saveApi()">บันทึก URL</button>
+      <button class="ghost" onclick="testConn()">🔌 ทดสอบการเชื่อมต่อ</button>
+    </div>
+    <div class="msg" id="apiMsg"></div>
   </div>
 
   <div class="tabs">
@@ -195,17 +199,50 @@
 </div>
 
 <script>
-var API = "";   // ← วาง URL /exec ตรงนี้ได้เลย เพื่อไม่ต้องกรอกทุกครั้ง
+var API = "https://script.google.com/macros/s/AKfycbw6dzATGSPNiyBTKc1Z_y-bWtYgbItshjXoBTtd_BWIlC3Hy_jxauzI6Qly1L8IzG4Q/exec";   // ← วาง URL /exec ตรงนี้ได้เลย เพื่อไม่ต้องกรอกทุกครั้ง
 var requirePhoto = true, photoData = null, stream = null;
 
-function initApi(){ if(API){document.getElementById('setupBox').classList.add('hide');document.getElementById('apiUrl').value=API;} }
-function saveApi(){ API=document.getElementById('apiUrl').value.trim(); if(!API){alert('กรุณาวาง URL');return;}
-  document.getElementById('setupBox').classList.add('hide'); alert('บันทึก URL แล้ว'); }
+function initApi(){ if(API) document.getElementById('apiUrl').value=API; }
+function saveApi(){ API=document.getElementById('apiUrl').value.trim();
+  if(!API){ show('apiMsg','bad','กรุณาวาง URL'); return; }
+  if(API.slice(-5)!=='/exec'){ show('apiMsg','bad','URL ต้องลงท้ายด้วย /exec (ห้ามใช้ /dev)'); return; }
+  show('apiMsg','info','บันทึกแล้ว — กำลังทดสอบการเชื่อมต่อ...'); testConn(); }
 
-async function apiGet(p){ var u=API+(API.indexOf('?')>=0?'&':'?')+new URLSearchParams(p).toString();
-  return await (await fetch(u)).json(); }
-async function apiPost(p){ return await (await fetch(API,{method:'POST',
-  headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)})).json(); }
+// แปลงคำตอบให้เป็น JSON พร้อมตรวจจับกรณีเชื่อมต่อไม่ติด/ตั้งค่า Deploy ผิด
+async function readJson_(res){
+  var text = await res.text();
+  try { return JSON.parse(text); }
+  catch(e){
+    if(/<html|accounts\.google|ServiceLogin|Sign in/i.test(text))
+      throw 'API ตอบกลับเป็นหน้า "เข้าสู่ระบบ" ของ Google แทนข้อมูล → ตอน Deploy ต้องตั้ง Who has access = "Anyone" (ไม่ใช่ Anyone with Google account) และใช้ URL /exec';
+    if(/Script function not found|not found|Error/i.test(text))
+      throw 'API แจ้ง error → ตรวจสอบว่า Deploy เวอร์ชันใหม่แล้ว และวาง URL /exec ถูกต้อง';
+    throw 'อ่านคำตอบจาก API ไม่ได้: ' + text.slice(0,140);
+  }
+}
+async function apiGet(p){
+  if(!API) throw 'ยังไม่ได้ตั้งค่า URL ของ API';
+  var u=API+(API.indexOf('?')>=0?'&':'?')+new URLSearchParams(p).toString();
+  var res;
+  try{ res=await fetch(u); }
+  catch(e){ throw 'เชื่อมต่อ API ไม่ได้ (network/CORS): '+e.message+' — ตรวจสอบ URL และการ Deploy'; }
+  return await readJson_(res);
+}
+async function apiPost(p){
+  if(!API) throw 'ยังไม่ได้ตั้งค่า URL ของ API';
+  var res;
+  try{ res=await fetch(API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}); }
+  catch(e){ throw 'เชื่อมต่อ API ไม่ได้ (network/CORS): '+e.message+' — ตรวจสอบ URL และการ Deploy'; }
+  return await readJson_(res);
+}
+async function testConn(){
+  try{
+    if(!API) API=document.getElementById('apiUrl').value.trim();
+    var d=await apiGet({action:'ping'});
+    if(d && d.ok){ show('apiMsg','ok','✓ เชื่อมต่อสำเร็จ ('+d.msg+') — พร้อมใช้งาน'); }
+    else{ show('apiMsg','bad','เชื่อมต่อได้แต่ API ตอบผิดปกติ'); }
+  }catch(e){ show('apiMsg','bad',String(e)); }
+}
 function getGPS(){ return new Promise(function(res,rej){
   if(!navigator.geolocation) return rej('อุปกรณ์นี้ไม่รองรับ GPS');
   navigator.geolocation.getCurrentPosition(
@@ -303,17 +340,22 @@ async function checkIn(){
 var TCODE="",SESSION=null,tokenTimer=null,countTimer=null,dataTimer=null,expiresIn=0,COURSES=[];
 
 async function teacherLogin(){
-  if(!API){show('tLoginMsg','bad','ยังไม่ได้ตั้งค่า URL');return;}
+  if(!API){show('tLoginMsg','bad','ยังไม่ได้ตั้งค่า URL — ไปตั้งที่กล่อง ⚙️ ด้านบนก่อน');return;}
   TCODE=document.getElementById('tCode').value.trim();
-  var d=await apiGet({action:'listSessions',code:TCODE});
-  if(!d.ok){show('tLoginMsg','bad',d.error);return;}
-  document.getElementById('tLogin').classList.add('hide');
-  document.getElementById('tCreate').classList.remove('hide');
-  document.getElementById('cDate').value=new Date().toISOString().slice(0,10);
-  loadCourses();
+  if(!TCODE){show('tLoginMsg','bad','กรุณากรอกรหัสอาจารย์');return;}
+  show('tLoginMsg','info','กำลังเข้าสู่ระบบ...');
+  try{
+    var d=await apiGet({action:'listSessions',code:TCODE});
+    if(!d.ok){show('tLoginMsg','bad',d.error);return;}
+    document.getElementById('tLogin').classList.add('hide');
+    document.getElementById('tCreate').classList.remove('hide');
+    document.getElementById('cDate').value=new Date().toISOString().slice(0,10);
+    loadCourses();
+  }catch(e){ show('tLoginMsg','bad',String(e)); }
 }
 async function loadCourses(){
-  var d=await apiGet({action:'listCourses',code:TCODE}); if(!d.ok) return;
+  var d; try{ d=await apiGet({action:'listCourses',code:TCODE}); }catch(e){ return; }
+  if(!d.ok) return;
   COURSES=d.courses;
   var sel=document.getElementById('courseSel');
   sel.innerHTML='<option value="">— เลือก / หรือกรอกเอง —</option>';
@@ -329,14 +371,16 @@ function applyCourse(){
   document.getElementById('cRoster').value=c.rosterSheet||'เช็คชื่อ';
 }
 async function addCourse(){
-  var d=await apiPost({type:'addCourse',code:TCODE,
-    subject:document.getElementById('nSubject').value.trim(),
-    group:document.getElementById('nGroup').value.trim(),
-    rosterSheet:document.getElementById('nRoster').value.trim(),
-    courseCode:document.getElementById('nCode').value.trim()});
-  if(d.ok){ show('nMsg','ok','บันทึกรายวิชาแล้ว'); loadCourses();
-    ['nSubject','nGroup','nRoster','nCode'].forEach(function(id){document.getElementById(id).value='';}); }
-  else{ show('nMsg','bad',d.error); }
+  try{
+    var d=await apiPost({type:'addCourse',code:TCODE,
+      subject:document.getElementById('nSubject').value.trim(),
+      group:document.getElementById('nGroup').value.trim(),
+      rosterSheet:document.getElementById('nRoster').value.trim(),
+      courseCode:document.getElementById('nCode').value.trim()});
+    if(d.ok){ show('nMsg','ok','บันทึกรายวิชาแล้ว'); loadCourses();
+      ['nSubject','nGroup','nRoster','nCode'].forEach(function(id){document.getElementById(id).value='';}); }
+    else{ show('nMsg','bad',d.error); }
+  }catch(e){ show('nMsg','bad',String(e)); }
 }
 
 async function createSession(){
